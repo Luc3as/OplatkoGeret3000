@@ -1,0 +1,347 @@
+substitutions:
+  devicename: "oplatkogeret"
+  upper_devicename: "OplátkoGerét"
+
+esphome:
+  name: $devicename
+  platform: ESP8266
+  board: d1_mini
+  includes:
+      - arduino_port_expander.h
+  on_boot:
+    priority: -100.0
+    then:
+      - sensor.rotary_encoder.set_value:
+          id: rotary_encoder1
+          value: 20
+      - lambda: |-
+                id(aktualny_cas) = millis();
+
+wifi:
+  ssid: "WIFIname1"
+  password: "WifiPass123"
+
+# Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: ${upper_devicename} Hotspot
+    password: "Password123"
+
+captive_portal:
+
+# Enable logging
+logger:
+#  level: debug
+
+# Enable Home Assistant API
+api:
+  password: "PASSWORD"
+  reboot_timeout: 0s
+
+
+ota:
+  password: "PASSWORD"
+
+i2c:
+  sda: D4
+  scl: D5
+  id: i2c_component
+
+spi:
+  miso_pin: D0
+  clk_pin: D1
+  
+font:
+  - file: "OpenSans-Regular.ttf"
+    id: OpenSans
+    size: 12
+  - file: "OpenSans-Bold.ttf"
+    id: OpenSansBold
+    size: 30
+
+globals:
+  - id: actual_screen
+    type: int
+    restore_value: no
+    initial_value: '1'
+  - id: spodna_platna_nastavenie
+    type: float
+    restore_value: yes
+    initial_value: '20'
+  - id: vrchna_platna_nastavenie
+    type: float
+    restore_value: yes
+    initial_value: '20'
+  - id: pocitadlo_oplatok
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: predosly_cas
+    type: float
+    restore_value: no
+    initial_value: '10'
+  - id: aktualny_cas
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+    address: 0x3C
+    update_interval: 500ms
+    id: "display1"
+    pages:
+      - id: "aktualny_stav"
+        lambda: |-
+          float odpocet = ( id(predosly_cas) - ((millis() - id(aktualny_cas))/1000) );
+
+          it.print(32, -3, id(OpenSans),TextAlign::TOP_CENTER, "Vrch");
+          if (odpocet >= 0 && odpocet < 1000) {
+            it.printf(62, 50, id(OpenSans),TextAlign::TOP_CENTER, "%.0f", odpocet );
+          } else {
+            it.print(62, 50, id(OpenSans),TextAlign::TOP_CENTER, "0");
+          }
+          if (odpocet == 0 ) {
+            id(buzzer).turn_on();
+            delay(500);
+            id(buzzer).turn_off();
+          }
+          if (odpocet > 0 && id(predosly_cas) > 0 ) {
+            int vyska = 50.0-(odpocet/id(predosly_cas)*50.0) ;
+            //ESP_LOGD("main", "Odpocet: %f", odpocet);
+            //ESP_LOGD("main", "Predosly: %f", id(predosly_cas));
+            //ESP_LOGD("main", "Vyska: %d", vyska);
+            it.filled_rectangle(59,50.0-vyska,6,vyska);  
+          }
+          it.line(59,0,65,0);
+          it.line(59,50,65,50);
+          it.print(93, -3, id(OpenSans),TextAlign::TOP_CENTER, "Spodok");
+          if (isnan(id(teplota_vrch).state)) {
+            it.printf(32, 2, id(OpenSansBold),TextAlign::TOP_CENTER, "-");
+          } else {
+            it.printf(32, 2, id(OpenSansBold),TextAlign::TOP_CENTER, "%.0f", id(teplota_vrch).state);
+          }
+          if (isnan(id(teplota_spodok).state)) {
+            it.printf(92, 2, id(OpenSansBold),TextAlign::TOP_CENTER, "-");
+          } else {
+            it.printf(92, 2, id(OpenSansBold),TextAlign::TOP_CENTER, "%.0f", id(teplota_spodok).state);
+          }
+          it.printf(32, 35, id(OpenSans),TextAlign::TOP_CENTER, "%.0f°C", id(vrchna_platna_nastavenie));
+          it.printf(92, 35, id(OpenSans),TextAlign::TOP_CENTER, "%.0f°C", id(spodna_platna_nastavenie));
+          it.printf(32, 49, id(OpenSans),TextAlign::TOP_CENTER, "%s", id(rele_vrchna_platna).state ? "HREJE" : " ");
+          it.printf(92, 49, id(OpenSans),TextAlign::TOP_CENTER, "%s", id(rele_spodna_platna).state ? "HREJE" : " ");
+      - id: "nastavenia_vrch"
+        lambda: |-
+          it.print(64, -3, id(OpenSans),TextAlign::TOP_CENTER, "NASTAVENIE VRCH");
+          it.printf(64, 10, id(OpenSansBold),TextAlign::TOP_CENTER, "%.0f°C", id(vrchna_platna_nastavenie));
+      - id: "nastavenia_spodok"
+        lambda: |-
+          it.print(64, -3, id(OpenSans),TextAlign::TOP_CENTER, "NASTAVENIE SPODOK"); 
+          it.printf(64, 10, id(OpenSansBold),TextAlign::TOP_CENTER, "%.0f°C", id(spodna_platna_nastavenie));
+
+custom_component:
+  - id: ape
+    lambda: |-
+      auto ape_component = new ArduinoPortExpander(i2c_component, 0x08);
+      return {ape_component};
+
+sensor:
+  - platform: max6675
+    id: "teplota_vrch"
+    internal: true
+    cs_pin: D8
+    update_interval: 2s
+    on_raw_value:
+      then:
+        - script.execute: ovladaj_vrchnu_platnu
+  - platform: max6675
+    id: "teplota_spodok"
+    internal: true
+    cs_pin: D7
+    update_interval: 2s
+    on_raw_value:
+      then:
+        - script.execute: ovladaj_spodnu_platnu
+  - platform: template
+    name: "Teplota spodná platňa"
+    id: "teplota_spodok_template"
+    unit_of_measurement: "°C"
+    lambda: |-
+      return id(teplota_spodok).state ;
+    update_interval: 30s
+  - platform: template
+    name: "Teplota vrchná platňa"
+    id: "teplota_vrch_template"
+    unit_of_measurement: "°C"
+    lambda: |-
+      return id(teplota_vrch).state ;
+    update_interval: 30s
+  - platform: template
+    name: "Nastavená teplota spodná platňa"
+    unit_of_measurement: "°C"
+    lambda: |-
+      return id(spodna_platna_nastavenie) ;
+    update_interval: 30s
+  - platform: template
+    name: "Nastavená teplota vrchná platňa"
+    unit_of_measurement: "°C"
+    lambda: |-
+      return id(vrchna_platna_nastavenie) ;
+    update_interval: 30s
+  - platform: template
+    name: "Počet upečených oplátok"
+    id: "pocet_upecenych_oplatok"
+    unit_of_measurement: "kusov"
+    lambda: |-
+      return id(pocitadlo_oplatok) ;
+    accuracy_decimals: 0
+    update_interval: 30s  
+
+  - platform: rotary_encoder
+    name: "Rotary Encoder"
+    id: "rotary_encoder1"
+    pin_a: D2
+    pin_b: D3  
+    min_value: 20
+    max_value: 400
+    on_raw_value:
+      then:
+        - lambda: |-
+            if (id(actual_screen) == 2) {
+              id(vrchna_platna_nastavenie) = id(rotary_encoder1).state;
+            } else if (id(actual_screen) == 3) { 
+              id(spodna_platna_nastavenie) = id(rotary_encoder1).state;
+            }
+        - component.update: display1
+        
+switch:
+  - platform: restart
+    name: ${upper_devicename} reštart
+  - platform: gpio
+    name: "Relé vrchná platňa"
+    id: "rele_vrchna_platna"
+    pin:
+      number: GPIO1
+      inverted: yes
+  - platform: gpio
+    name: "Relé spodná platňa"
+    id: "rele_spodna_platna"
+    pin:
+      number: GPIO3
+      inverted: yes
+  - platform: output
+    id: "buzzer"
+    output: output_pin_4
+
+binary_sensor:    
+  - platform: gpio
+    name: "Rotary encoder button"
+    pin:
+      number: D6
+      mode: INPUT_PULLUP
+      inverted: True   
+    on_press:
+      then:
+        - lambda: |-
+            if (id(actual_screen) == 3) {
+              id(actual_screen) = 1;
+            } else {
+              id(actual_screen) += 1;
+            }
+        - logger.log:
+            format: "Actual screen is: %d"
+            args: [ 'id(actual_screen)']
+        - display.page.show_next: display1
+        - component.update: display1
+
+  - platform: custom
+    lambda: |-
+      return {ape_binary_sensor(ape, 14) // 14 = A0
+              };
+
+    binary_sensors:
+      - id: spinac_oplatkovac
+        filters:
+          - delayed_on: 500ms
+          - delayed_off: 500ms
+          - invert:
+        on_press:
+          then:
+            - lambda: |-
+                id(pocitadlo_oplatok) ++;
+            - lambda: |-
+                id(predosly_cas) = ( millis() - id(aktualny_cas) ) / 1000 - 2;
+            - logger.log:
+                format: "Doba pecenia oplatky bola: %f"
+                args: [ 'id(predosly_cas) ']
+        on_release:
+          then:
+            - lambda: |-
+                id(aktualny_cas) = millis();
+            - logger.log:
+                format: "Zaciatok pecenia oplatky je: %d"
+                args: [ 'id(aktualny_cas)']
+
+
+output:
+- platform: custom
+  type: binary
+  lambda: |-
+    return {ape_binary_output(ape, 4)};
+  outputs:
+    - id: output_pin_4
+      inverted: false
+
+script:
+  - id: ovladaj_vrchnu_platnu
+    then:
+      - if:
+          condition:
+            # Vypni platnu ak je nazhavena
+            lambda: |-
+              if ( id(teplota_vrch).state >=  ( id(vrchna_platna_nastavenie)  -2 ) && id(rele_vrchna_platna).state == 1) {
+              return true; 
+              } else {
+                return false;
+              }
+          then:
+            - switch.turn_off: rele_vrchna_platna
+            - logger.log: "Vypinam vrchnu platnu"
+      - if:
+          condition:
+            lambda: |-
+              if ( ( id(teplota_vrch).state + 2 ) < ( id(vrchna_platna_nastavenie) ) && id(rele_vrchna_platna).state == 0 ) {
+              return true; 
+              } else {
+                return false;
+              }
+          then:
+            - switch.turn_on: rele_vrchna_platna
+            - logger.log: "Zapinam vrchnu platnu"
+  - id: ovladaj_spodnu_platnu
+    then:
+      - if:
+          condition:
+            # Vypni platnu ak je nazhavena
+            lambda: |-
+              if ( id(teplota_spodok).state  >= ( id(spodna_platna_nastavenie) - 2 ) && id(rele_spodna_platna).state == 1) {
+              return true; 
+              } else {
+                return false;
+              }
+          then:
+            - switch.turn_off: rele_spodna_platna
+            - logger.log: "Vypinam spodnu platnu"
+
+      - if:
+          condition:
+          # Zapni platnu lebo ochladla
+            lambda: |-
+              if ( ( id(teplota_spodok).state + 2 ) <  ( id(spodna_platna_nastavenie ) ) && id(rele_spodna_platna).state == 0 ) {
+              return true; 
+              } else {
+                return false;
+              }
+          then:
+            - switch.turn_on: rele_spodna_platna
+            - logger.log: "Zapinam spodnu platnu"
